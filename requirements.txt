@@ -1,0 +1,5 @@
+streamlit
+openai
+moviepy
+pydub
+yt_dlp

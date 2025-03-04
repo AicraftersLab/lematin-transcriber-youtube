@@ -87,7 +87,7 @@ if st.button("Transcrire la vidéo"):
             st.info("📝 Transcription en cours...")
             full_transcript = ""
             for chunk in audio_chunks:
-                full_transcript += transcribe_audio(chunk) + "\n"
+                full_transcript += transcribe_audio(chunk)
                 os.remove(chunk)  # Nettoyage
             
             st.success("✅ Transcription terminée !")

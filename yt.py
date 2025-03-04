@@ -8,40 +8,40 @@ from moviepy import AudioFileClip
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # Fonction pour télécharger et convertir l'audio depuis YouTube
-# def download_and_convert_audio(video_url, audio_format="mp3"):
-#     try:
-#         ydl_opts = {
-#             'format': 'bestaudio/best',
-#             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': audio_format}],
-#             'outtmpl': 'temp/audio.%(ext)s',
-#             'noplaylist': True
-#         }
-#         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-#             ydl.download([video_url])
-#         return "temp/audio.mp3"
-#     except Exception as e:
-#         st.error(f"Erreur de téléchargement : {e}")
-#         return None
-
 def download_and_convert_audio(video_url, audio_format="mp3"):
     try:
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': audio_format}],
             'outtmpl': 'temp/audio.%(ext)s',
-            'noplaylist': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'nocheckcertificate': True  # Avoids SSL certificate issues
+            'noplaylist': True
         }
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
-        
         return "temp/audio.mp3"
-
-    except yt_dlp.utils.DownloadError as e:
+    except Exception as e:
         st.error(f"Erreur de téléchargement : {e}")
         return None
+
+# def download_and_convert_audio(video_url, audio_format="mp3"):
+#     try:
+#         ydl_opts = {
+#             'format': 'bestaudio/best',
+#             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': audio_format}],
+#             'outtmpl': 'temp/audio.%(ext)s',
+#             'noplaylist': True,
+#             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+#             'nocheckcertificate': True  # Avoids SSL certificate issues
+#         }
+        
+#         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+#             ydl.download([video_url])
+        
+#         return "temp/audio.mp3"
+
+#     except yt_dlp.utils.DownloadError as e:
+#         st.error(f"Erreur de téléchargement : {e}")
+#         return None
 
 
 # Fonction pour diviser l'audio en morceaux

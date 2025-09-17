@@ -2,4 +2,5 @@ streamlit
 openai
 moviepy
 pydub
-yt_dlp
+yt-dlp
+pytube

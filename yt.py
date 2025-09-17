@@ -65,6 +65,7 @@ def transcribe_audio(audio_chunk_path):
             model="whisper-1",
             file=audio_file,
             response_format="text",
+            prompt="Transcribe the audio exactly in the spoken language of the speaker. If the audio contains multiple languages (e.g., English, French, Arabic, or others), switch dynamically and write each segment in its original spoken language without translation. Do not normalize or convert languages; preserve the natural mix exactly as spoken."
         )
     return transcription
 
@@ -97,3 +98,4 @@ if st.button("Transcrire la vidéo"):
             os.remove(audio_path)  # Nettoyage
     else:
         st.error("❌ Veuillez entrer un lien YouTube valide.")
+

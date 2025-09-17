@@ -2,49 +2,101 @@ import streamlit as st
 import openai
 import yt_dlp
 import os
+import re
+import subprocess
+from pytube import YouTube
 from moviepy import AudioFileClip
 
-# Clé API OpenAI (à configurer via les variables d'environnement)
+# Clé API OpenAI
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-# Fonction pour télécharger et convertir l'audio depuis YouTube
-def download_and_convert_audio(video_url, audio_format="mp3"):
+# ---------------------------
+# Fonction utilitaire : standardiser l’URL YouTube
+# ---------------------------
+def standardize_youtube_url(url: str) -> str:
+    if "youtu.be/" in url:
+        video_id = url.split("youtu.be/")[-1].split("?")[0]
+        return f"https://www.youtube.com/watch?v={video_id}"
+
+    if "youtube.com/watch" in url:
+        video_id_match = re.search(r"v=([a-zA-Z0-9_-]{11})", url)
+        if video_id_match:
+            return f"https://www.youtube.com/watch?v={video_id_match.group(1)}"
+
+    return url
+
+# ---------------------------
+# Fonction principale : téléchargement avec fallback
+# ---------------------------
+def download_and_convert_audio(video_url: str, audio_format="mp3", retries=2) -> str:
+    url = standardize_youtube_url(video_url)
+    st.info(f"🔗 URL standardisée : {url}")
+
+    # --- 1) Essai avec yt_dlp ---
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": audio_format,
+            "preferredquality": "192",
+        }],
+        "outtmpl": f"temp/audio.%(ext)s",
+        "noplaylist": True,
+        "quiet": True,
+        "ignoreerrors": True
+    }
+
+    last_error = None
+    for attempt in range(retries):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    output_path = f"temp/audio.{audio_format}"
+                    if os.path.exists(output_path):
+                        return output_path
+        except Exception as e:
+            last_error = e
+            st.warning(f"⚠️ Tentative yt_dlp {attempt+1} échouée : {e}")
+
+    # --- 2) Fallback avec pytube ---
     try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': audio_format}],
-            'outtmpl': 'temp/audio.%(ext)s',
-            'noplaylist': True
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-        return "temp/audio.mp3"
+        st.info("⏳ Fallback avec pytube...")
+        yt = YouTube(url)
+        stream = yt.streams.filter(only_audio=True).first()
+        fallback_path = "temp/audio_fallback.mp4"
+        stream.download(filename=fallback_path)
+
+        audio_clip = AudioFileClip(fallback_path)
+        final_path = "temp/audio_fallback.mp3"
+        audio_clip.write_audiofile(final_path)
+        audio_clip.close()
+        os.remove(fallback_path)
+        return final_path
     except Exception as e:
-        st.error(f"Erreur de téléchargement : {e}")
+        st.warning(f"⚠️ Fallback pytube échoué : {e}")
+
+    # --- 3) Dernier recours avec youtube-dl en subprocess ---
+    try:
+        st.info("⏳ Dernier recours : youtube-dl CLI...")
+        final_path = "temp/audio_cli.mp3"
+        cmd = [
+            "youtube-dl",
+            "-x",
+            "--audio-format", audio_format,
+            "-o", final_path,
+            url
+        ]
+        subprocess.run(cmd, check=True)
+        if os.path.exists(final_path):
+            return final_path
+    except Exception as e:
+        st.error(f"❌ Échec complet (yt_dlp + pytube + youtube-dl) : {e}")
         return None
 
-# def download_and_convert_audio(video_url, audio_format="mp3"):
-#     try:
-#         ydl_opts = {
-#             'format': 'bestaudio/best',
-#             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': audio_format}],
-#             'outtmpl': 'temp/audio.%(ext)s',
-#             'noplaylist': True,
-#             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-#             'nocheckcertificate': True  # Avoids SSL certificate issues
-#         }
-        
-#         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-#             ydl.download([video_url])
-        
-#         return "temp/audio.mp3"
-
-#     except yt_dlp.utils.DownloadError as e:
-#         st.error(f"Erreur de téléchargement : {e}")
-#         return None
-
-
+# ---------------------------
 # Fonction pour diviser l'audio en morceaux
+# ---------------------------
 def split_audio(audio_path, chunk_length=60):
     audio = AudioFileClip(audio_path)
     chunks = []
@@ -57,9 +109,10 @@ def split_audio(audio_path, chunk_length=60):
     
     return chunks
 
+# ---------------------------
 # Fonction pour transcrire un fichier audio
+# ---------------------------
 def transcribe_audio(audio_chunk_path):
-    
     with open(audio_chunk_path, "rb") as audio_file:
         transcription = openai.audio.transcriptions.create(
             model="whisper-1",
@@ -69,9 +122,10 @@ def transcribe_audio(audio_chunk_path):
         )
     return transcription
 
-
+# ---------------------------
 # Interface Streamlit
-st.title("🎙️ Transcripteur de Vidéos YouTube Le Matin")
+# ---------------------------
+st.title("🎙️ Transcripteur de Vidéos YouTube")
 st.write("Entrez un lien YouTube pour obtenir la transcription de la vidéo.")
 
 video_url = st.text_input("🔗 Entrez le lien YouTube ici", "")
@@ -98,4 +152,3 @@ if st.button("Transcrire la vidéo"):
             os.remove(audio_path)  # Nettoyage
     else:
         st.error("❌ Veuillez entrer un lien YouTube valide.")
-

@@ -4,35 +4,52 @@ import yt_dlp
 import os
 import re
 import subprocess
+import shutil
 from pytube import YouTube
 from moviepy import AudioFileClip
 
-# Clé API OpenAI
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# =========================
+# Config & Helpers
+# =========================
 
-# ---------------------------
-# Fonction utilitaire : standardiser l’URL YouTube
-# ---------------------------
+# OpenAI API key
+openai.api_key = st.secrets.get("OPENAI_API_KEY", None)
+
+def ensure_temp_dir():
+    os.makedirs("temp", exist_ok=True)
+
 def standardize_youtube_url(url: str) -> str:
+    """Normalize YouTube URLs (youtu.be -> youtube.com & strip junk)."""
     if "youtu.be/" in url:
         video_id = url.split("youtu.be/")[-1].split("?")[0]
         return f"https://www.youtube.com/watch?v={video_id}"
 
     if "youtube.com/watch" in url:
-        video_id_match = re.search(r"v=([a-zA-Z0-9_-]{11})", url)
-        if video_id_match:
-            return f"https://www.youtube.com/watch?v={video_id_match.group(1)}"
+        m = re.search(r"v=([a-zA-Z0-9_-]{11})", url)
+        if m:
+            return f"https://www.youtube.com/watch?v={m.group(1)}"
 
     return url
 
-# ---------------------------
-# Fonction principale : téléchargement robuste avec fallbacks
-# ---------------------------
-def download_and_convert_audio(video_url: str, audio_format="mp3", retries=2) -> str:
+def has_ffmpeg() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+# =========================
+# Download & Convert (robust with fallbacks)
+# =========================
+def download_and_convert_audio(video_url: str, audio_format="mp3", retries=2, debug=False) -> str | None:
+    """
+    Returns path to an audio file (mp3) in ./temp or None on failure.
+    """
+    ensure_temp_dir()
     url = standardize_youtube_url(video_url)
     st.info(f"🔗 URL standardisée : {url}")
 
-    # --- 1) yt_dlp avec headers + cookiesfrombrowser ---
+    if not has_ffmpeg():
+        st.error("FFmpeg introuvable. Installe-le (ex: `apt-get install ffmpeg` ou Homebrew sur macOS).")
+        return None
+
+    # 1) Try yt_dlp (Python API) with User-Agent
     ydl_opts = {
         "format": "bestaudio/best",
         "postprocessors": [{
@@ -40,9 +57,10 @@ def download_and_convert_audio(video_url: str, audio_format="mp3", retries=2) ->
             "preferredcodec": audio_format,
             "preferredquality": "192",
         }],
-        "outtmpl": f"temp/audio.%(ext)s",
+        "outtmpl": "temp/audio.%(ext)s",
         "noplaylist": True,
-        "quiet": True,
+        "quiet": not debug,     # show logs if debug
+        "verbose": debug,
         "ignoreerrors": True,
         "http_headers": {
             "User-Agent": (
@@ -50,12 +68,11 @@ def download_and_convert_audio(video_url: str, audio_format="mp3", retries=2) ->
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             )
-        },
-        "cookiesfrombrowser": ("chrome",),  # utiliser cookies Chrome si dispo
+        }
     }
 
     last_error = None
-    for attempt in range(retries):
+    for attempt in range(1, retries + 1):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -65,99 +82,158 @@ def download_and_convert_audio(video_url: str, audio_format="mp3", retries=2) ->
                         return output_path
         except Exception as e:
             last_error = e
-            st.warning(f"⚠️ Tentative yt_dlp {attempt+1} échouée : {e}")
+            st.warning(f"⚠️ Tentative yt_dlp {attempt}/{retries} échouée : {e}")
 
-    # --- 2) Fallback avec pytube ---
+    # 2) Fallback: pytube
     try:
         st.info("⏳ Fallback avec pytube...")
         yt = YouTube(url)
         stream = yt.streams.filter(only_audio=True).first()
+        if not stream:
+            raise RuntimeError("Aucun flux audio disponible via pytube.")
         fallback_path = "temp/audio_fallback.mp4"
         stream.download(filename=fallback_path)
 
+        # Convert to mp3
         audio_clip = AudioFileClip(fallback_path)
         final_path = "temp/audio_fallback.mp3"
-        audio_clip.write_audiofile(final_path)
+        audio_clip.write_audiofile(final_path, logger=None if not debug else "bar")
         audio_clip.close()
-        os.remove(fallback_path)
+        try:
+            os.remove(fallback_path)
+        except Exception:
+            pass
         return final_path
     except Exception as e:
         st.warning(f"⚠️ Fallback pytube échoué : {e}")
 
-    # --- 3) Fallback CLI yt-dlp ---
+    # 3) Final fallback: yt-dlp CLI
     try:
         st.info("⏳ Dernier recours : yt-dlp CLI...")
-        final_path = "temp/audio_cli.%(ext)s"
+        # we keep template to capture the right final name after conversion
+        final_template = "temp/audio_cli.%(ext)s"
         cmd = [
             "yt-dlp",
             "-x",
             "--audio-format", audio_format,
-            "-o", final_path,
+            "-o", final_template,
             url
         ]
-        subprocess.run(cmd, check=True)
-        cli_final = final_path.replace("%(ext)s", audio_format)
-        if os.path.exists(cli_final):
-            return cli_final
+        if debug:
+            cmd.append("--verbose")
+
+        # Run
+        completed = subprocess.run(cmd, capture_output=debug, text=debug, check=True)
+        if debug and completed:
+            st.code((completed.stdout or "") + "\n" + (completed.stderr or ""), language="bash")
+
+        final_path = final_template.replace("%(ext)s", audio_format)
+        if os.path.exists(final_path):
+            return final_path
+        else:
+            # Fallback guess: sometimes container names slightly differ; list temp files
+            for f in os.listdir("temp"):
+                if f.startswith("audio_cli.") and f.endswith(f".{audio_format}"):
+                    return os.path.join("temp", f)
+            raise FileNotFoundError("Sortie CLI yt-dlp introuvable.")
+    except subprocess.CalledProcessError as e:
+        # Show CLI output if debug
+        if debug:
+            st.code((e.stdout or "") + "\n" + (e.stderr or ""), language="bash")
+        st.error(f"❌ Échec CLI yt-dlp : {e}")
     except Exception as e:
         st.error(f"❌ Échec complet (yt_dlp + pytube + CLI) : {e}")
-        return None
 
-# ---------------------------
-# Fonction pour diviser l'audio en morceaux
-# ---------------------------
-def split_audio(audio_path, chunk_length=60):
+    return None
+
+# =========================
+# Audio Splitting
+# =========================
+def split_audio(audio_path: str, chunk_length=60) -> list[str]:
+    ensure_temp_dir()
     audio = AudioFileClip(audio_path)
     chunks = []
     duration = int(audio.duration)
-    
+
     for i in range(0, duration, chunk_length):
         chunk_path = f"temp/chunk_{i}.mp3"
-        audio.subclipped(i, min(i + chunk_length, duration)).write_audiofile(chunk_path)
+        # subclipped(start, end)
+        audio.subclipped(i, min(i + chunk_length, duration)).write_audiofile(chunk_path, logger=None)
         chunks.append(chunk_path)
-    
+
+    audio.close()
     return chunks
 
-# ---------------------------
-# Fonction pour transcrire un fichier audio
-# ---------------------------
-def transcribe_audio(audio_chunk_path):
+# =========================
+# Transcription (Whisper-1, multilingual as-spoken)
+# =========================
+WHISPER_PROMPT = (
+    "Transcribe the audio exactly in the spoken language of the speaker. "
+    "If the audio contains multiple languages (e.g., English, French, Arabic, or others), "
+    "switch dynamically and write each segment in its original spoken language without translation. "
+    "Do not normalize or convert languages; preserve the natural mix exactly as spoken."
+)
+
+def transcribe_audio(audio_chunk_path: str) -> str:
     with open(audio_chunk_path, "rb") as audio_file:
-        transcription = openai.audio.transcriptions.create(
+        # response_format="text" returns a raw string in the v1 SDK
+        result = openai.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             response_format="text",
-            prompt="Transcribe the audio exactly in the spoken language of the speaker. If the audio contains multiple languages (e.g., English, French, Arabic, or others), switch dynamically and write each segment in its original spoken language without translation. Do not normalize or convert languages; preserve the natural mix exactly as spoken."
+            prompt=WHISPER_PROMPT
         )
-    return transcription
+    # Ensure we return a string (SDK may return PlainText or object-like)
+    return result if isinstance(result, str) else str(result)
 
-# ---------------------------
-# Interface Streamlit
-# ---------------------------
-st.title("🎙️ Transcripteur de Vidéos YouTube")
-st.write("Entrez un lien YouTube pour obtenir la transcription de la vidéo.")
+# =========================
+# UI
+# =========================
+st.set_page_config(page_title="YouTube → Whisper Transcriber", page_icon="🎙️", layout="centered")
+st.title("🎙️ Transcripteur de Vidéos YouTube (multi-langue)")
 
-video_url = st.text_input("🔗 Entrez le lien YouTube ici", "")
+with st.sidebar:
+    st.header("⚙️ Options")
+    debug = st.checkbox("Activer le mode Debug (yt-dlp verbose)", value=False)
+    chunk_len = st.number_input("Taille des morceaux (sec)", min_value=30, max_value=600, value=60, step=10)
+    st.caption("Astuce : 60–120s par chunk est souvent un bon compromis.")
+
+st.write("Entrez un lien YouTube à transcrire. La transcription conserve chaque langue telle que parlée (ar, fr, en, …).")
+video_url = st.text_input("🔗 Lien YouTube", "")
 
 if st.button("Transcrire la vidéo"):
-    if video_url:
-        st.info("📥 Téléchargement de l'audio...")
-        audio_path = download_and_convert_audio(video_url)
-        
-        if audio_path:
-            st.info("🎙️ Découpage de l'audio...")
-            audio_chunks = split_audio(audio_path, chunk_length=60)
-
-            st.info("📝 Transcription en cours...")
-            full_transcript = ""
-            for chunk in audio_chunks:
-                full_transcript += transcribe_audio(chunk) + "\n"
-                os.remove(chunk)  # Nettoyage
-            
-            st.success("✅ Transcription terminée !")
-            st.text_area("📜 Texte Transcrit", full_transcript, height=300)
-            st.download_button("⬇️ Télécharger la transcription", full_transcript, file_name="transcription.txt")
-
-            os.remove(audio_path)  # Nettoyage
-    else:
+    if not openai.api_key:
+        st.error("⚠️ OPENAI_API_KEY manquant. Ajoute-le dans `st.secrets`.")
+    elif not video_url.strip():
         st.error("❌ Veuillez entrer un lien YouTube valide.")
+    else:
+        st.info("📥 Téléchargement de l'audio…")
+        audio_path = download_and_convert_audio(video_url, retries=2, debug=debug)
+
+        if audio_path:
+            st.success("✅ Audio téléchargé.")
+            try:
+                st.info("✂️ Découpage de l'audio…")
+                audio_chunks = split_audio(audio_path, chunk_length=int(chunk_len))
+
+                st.info("📝 Transcription en cours…")
+                full_transcript = []
+                for chunk in audio_chunks:
+                    text = transcribe_audio(chunk)
+                    full_transcript.append(text)
+                    # Clean up each chunk to save space
+                    try:
+                        os.remove(chunk)
+                    except Exception:
+                        pass
+
+                final_text = "\n".join(full_transcript).strip()
+                st.success("✅ Transcription terminée !")
+                st.text_area("📜 Texte Transcrit", final_text, height=350)
+                st.download_button("⬇️ Télécharger la transcription", final_text, file_name="transcription.txt")
+            finally:
+                # Clean original audio
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass

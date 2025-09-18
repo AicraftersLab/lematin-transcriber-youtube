@@ -312,13 +312,6 @@ def _yt_dlp_download(url, temp_dir):
 
 
 def download_audio(url):
-    """
-    Download audio from the given URL.
-    Args:
-        url (str): The URL of the YouTube video.
-    Returns:
-        str: The filepath of the downloaded audio file, normalized to mp3 when possible.
-    """
     norm_url = _normalize_youtube_url(url)
 
     temp_dir = tempfile.mkdtemp(prefix="yt_audio_")
@@ -333,6 +326,7 @@ def download_audio(url):
         filepath = _ensure_supported_audio(filepath)
         return filepath
     except Exception as e:
+        print("Failed...")
 
     # Fallback to yt-dlp with robust options and retries
     try:
@@ -375,4 +369,5 @@ if st.button("Transcrire la vidéo"):
             os.remove(audio_path)  # Nettoyage
     else:
         st.error("❌ Veuillez entrer un lien YouTube valide.")
+
 

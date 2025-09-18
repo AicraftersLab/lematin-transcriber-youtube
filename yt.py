@@ -4,7 +4,6 @@ import yt_dlp
 import os
 import tempfile
 import shutil
-import logging
 import re
 from moviepy import AudioFileClip
 from pytube import YouTube
@@ -13,9 +12,6 @@ from pydub import AudioSegment
 # Clé API OpenAI (à configurer via les variables d'environnement)
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(_name_)
 
 # Fonction pour télécharger et convertir l'audio depuis YouTube (wrapper robuste)
 def download_and_convert_audio(video_url, audio_format="mp3"):
@@ -63,7 +59,7 @@ def transcribe_audio(audio_chunk_path):
     # Skip tiny/empty chunks
     try:
         if not os.path.exists(audio_chunk_path) or os.path.getsize(audio_chunk_path) < 1024:
-            logger.warning("Skipping invalid/too-small chunk: %s", audio_chunk_path)
+            print("Skipping invalid/too-small chunk: %s", audio_chunk_path)
             return ""
     except Exception:
         return ""
@@ -81,7 +77,7 @@ def transcribe_audio(audio_chunk_path):
             )
         return str(result)
     except Exception as first_error:
-        logger.warning("Direct transcription failed for %s, retrying as 16k WAV: %s", audio_chunk_path, first_error)
+        print("Direct transcription failed for %s, retrying as 16k WAV: %s", audio_chunk_path, first_error)
 
     # Retry after converting to 16kHz mono WAV
     safe_path = None
@@ -96,7 +92,6 @@ def transcribe_audio(audio_chunk_path):
             )
         return str(result)
     except Exception as second_error:
-        logger.warning("Transcription failed for %s after WAV conversion: %s", audio_chunk_path, second_error)
         return ""
     finally:
         if safe_path and os.path.exists(safe_path):
@@ -159,7 +154,6 @@ def _ensure_supported_audio(filepath):
         
         return mp3_path
     except Exception as e:
-        logger.warning("Failed to convert audio to mp3: %s", e)
         return filepath
 
 
@@ -300,13 +294,11 @@ def _yt_dlp_download(url, temp_dir):
     last_err = None
     for fmt in format_attempts:
         try:
-            logger.info("yt-dlp trying format: %s", fmt)
             downloaded = try_once(fmt)
             if downloaded:
                 break
         except Exception as e:
             last_err = e
-            logger.warning("yt-dlp attempt failed for format %s: %s", fmt, e)
 
     if not downloaded:
         if last_err:
@@ -328,24 +320,19 @@ def download_audio(url):
         str: The filepath of the downloaded audio file, normalized to mp3 when possible.
     """
     norm_url = _normalize_youtube_url(url)
-    logger.info("Downloading audio from %s", norm_url)
 
     temp_dir = tempfile.mkdtemp(prefix="yt_audio_")
 
     # First try PyTube
     try:
         yt = YouTube(norm_url)
-        logger.info("Title: %s", yt.title)
-        logger.info("Length: %s", yt.length)
         stream = yt.streams.filter(only_audio=True).first()
         filepath = stream.download(output_path=temp_dir)
-        logger.info("Downloaded via PyTube: %s", filepath)
         if not _file_is_valid(filepath):
             raise RuntimeError("PyTube produced an empty file")
         filepath = _ensure_supported_audio(filepath)
         return filepath
     except Exception as e:
-        logger.warning("PyTube download failed, falling back to yt-dlp: %s", e)
 
     # Fallback to yt-dlp with robust options and retries
     try:
@@ -388,3 +375,4 @@ if st.button("Transcrire la vidéo"):
             os.remove(audio_path)  # Nettoyage
     else:
         st.error("❌ Veuillez entrer un lien YouTube valide.")
+
